@@ -1,0 +1,96 @@
+---
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install monitoring utilities
+  apt:
+    name:
+      - htop
+      - nload
+      - iotop
+      - ncdu
+      - net-tools
+      - curl
+      - wget
+      - jq
+      - nmap
+      - tcpdump
+      - sysstat
+      - glances
+    state: present
+
+- name: Enable sysstat data collection
+  lineinfile:
+    path: /etc/default/sysstat
+    regexp: "^ENABLED="
+    line: 'ENABLED="true"'
+    state: present
+  notify: Restart sysstat
+
+- name: Install Node Exporter for Prometheus metrics
+  block:
+    - name: Download Node Exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v1.8.0/node_exporter-1.8.0.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+
+    - name: Extract Node Exporter
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Move Node Exporter binary
+      copy:
+        src: /tmp/node_exporter-1.8.0.linux-amd64/node_exporter
+        dest: /usr/local/bin/node_exporter
+        mode: "0755"
+        remote_src: yes
+
+    - name: Create Node Exporter systemd service
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          After=network.target
+
+          [Service]
+          User=nobody
+          ExecStart=/usr/local/bin/node_exporter
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Node Exporter
+      systemd:
+        name: node_exporter
+        daemon_reload: yes
+        enabled: yes
+        state: started
+
+- name: Create monitoring helper script
+  copy:
+    dest: /usr/local/bin/check-infra
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      echo "=== Infrastructure Health Check ==="
+      echo ""
+      echo "--- web-01 (192.168.1.101) ---"
+      curl -s --max-time 3 http://192.168.1.101:5000 > /dev/null && echo "Flask app: UP" || echo "Flask app: DOWN"
+
+      echo ""
+      echo "--- db-01 (192.168.1.102) ---"
+      nc -z -w3 192.168.1.102 5432 && echo "PostgreSQL: UP" || echo "PostgreSQL: DOWN"
+
+      echo ""
+      echo "--- System Resources ---"
+      echo "CPU/Memory:"
+      top -bn1 | grep "Cpu\|Mem"
+      echo ""
+      echo "Disk:"
+      df -h /
